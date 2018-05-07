@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<script type="server/javascript">
+importClass(Packages.biz.netcentric.Person)
+var id=request.getParameter("id")
+var person=Person.lookup(id)
+print(person.name);
+</script>
+<head>
+<title>${person.name}</title>
+</head>
+<body>
+	<h1 title="${person.name}">${person.name}</h1>
+	<h2 data-if="person.married" title="${person.spouse}">Spouse:
+		${person.spouse}</h2>
+	<div data-for-child="person.children" color="red" >Child: ${child}</div>
+	<div data-set-person="person.spouseObj"> Local Variable: ${person.name}</div>	
+	
+	<!-- <div data-for-child="person.children" data-if="${child.length<4}" >Child: ${child}</div> -->
+	
+	<h2 title="${person.name}">Outer variable: ${person.name}</h1>
+</body>
+</html>

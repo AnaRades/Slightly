@@ -7,7 +7,6 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.regex.Pattern;
 
 import javax.script.Bindings;
 import javax.script.ScriptContext;
@@ -23,49 +22,21 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
-public class PersonJSoupParser {
+public class PersonJSoupParser implements HtmlConstants {
 
+	private static ScriptEngine engine = new ScriptEngineManager().getEngineByName("nashorn");	
+	private static Bindings globalBindings = engine.createBindings(); 
 	
-	//go over the html, traverse in tree-order
-	//check every tag, element body, attributes, attribute values
-	//maybe use a stack or queue to hold the resulting html
-	//if we find a script, evaluate it
-	//maybe better to user regex to match each specified section (data-if, data-for, $-expression, etc)
-	
-	//TODO: check what the deal is with NodeVisitor
-	//TODO: for instances like Spouse : ${expression}, replace only the expr with evaluated value
-	//TODO: add automated tests
-	//TODO: add optionals
-	//TODO: add type safety checks
-	//TODO: combine data-if with data-for
-	
-	
-	
-	
-	/**
-	 * Get a list of all element attributes
-	 * retrieve all special attributes
-	 * if multiple attrs with special keys, chain them --> ???
-	 * foreach attribute with special values, evaluate and replace the value
-	 * 
-	 * 
-	 * data-for-loopVar in arr, render if cond
-	 */
-	
-	private static final String pattern = Pattern.quote(".*${\\w\\d}");			
+	private static List<Element> elementsToRemove = new LinkedList<>();
+	private static Map<Element, Attribute> attrsToRemove = new HashMap<>();
+
 	public static String parse(File resource, HttpServletRequest request) {
 		try {
 			Document doc = Jsoup.parse(resource, "UTF-8");
 			Elements elements =  doc.getAllElements();
-			
-			ScriptEngine engine = new ScriptEngineManager().getEngineByName("nashorn");		
-			Bindings globalBindings = engine.createBindings(); 
+				
 			globalBindings.put("request", request);
 			engine.setBindings(globalBindings, ScriptContext.GLOBAL_SCOPE);
-						
-			Element peerElement = null;
-			List<Element> elementsToRemove = new LinkedList<>();
-			Map<Element, Attribute> attrsToRemove = new HashMap<>();
 			
 			for (Element element : elements) {
 				Bindings localBindings = engine.createBindings(); 
@@ -78,99 +49,48 @@ public class PersonJSoupParser {
 					element.remove();
 					continue;
 				}
-				peerElement = new Element(element.nodeName());
-				Attributes attributes = element.attributes();
-				
+				Attributes attributes = element.attributes();				
 				LinkedList<Attribute> listAttrs = new LinkedList<>(attributes.asList());
 				
 				for (Attribute attr : listAttrs) {
 					try {
-						System.out.println("------------------ATTR " + attr.getKey());
-						if (attr.getKey().startsWith("data-if")) {
-							Object ifobj = engine.eval(attr.getValue());
-							if (ifobj != null) {
-								boolean render = (boolean) ifobj;
-								if (!render) {
-									System.out.println("Don't render, remove element and continue");
-									elementsToRemove.add(element);
-									break;
-								} else {
-									attrsToRemove.put(element, attr);
-									continue;
-								}
-							}
-						}  else if (attr.getKey().startsWith("data-for-")) {
-							Object list = engine.eval(attr.getValue());
-							if (list instanceof List<?>) {
-								for (Object o : (List<?>)list) {
-									Element listEl = new Element(element.nodeName());
-									listEl.text(o.toString());
-									Attributes attrPersistent =element.attributes().clone();
-									attrPersistent.remove(attr.getKey());
-									listEl.attributes().addAll(attrPersistent);
-									element.before(listEl);
-								}
-							}
-							element.remove();
-							continue;
-						} else if(attr.getKey().startsWith("data-set-")) {
-							String localVarName = attr.getKey().substring(9);
-							Object globalObj = engine.get(localVarName);
-							
-							if(globalObj == null) {
-								System.out.println("No variable with the same name found");
-							} else {
-								System.out.println("GlobalStatePerson = " + globalObj.toString());
-								globalBindings.put(localVarName, globalObj);	
-							}
-							Person localStatePerson = (Person) engine.eval(attr.getValue(), localBindings);
-							if(localStatePerson == null) {
-								System.out.println("Local variable couldn't be created");
-							} else {
-								System.out.println("localStatePerson = " + localStatePerson.getName());
-								localBindings.put(localVarName, localStatePerson);
-								engine.setBindings(localBindings, ScriptContext.ENGINE_SCOPE);
-							}
-							attrsToRemove.put(element, attr);			
-						}
 						if(attr.getValue() == null) {
-							System.out.println("Attribute " + attr.getKey() + " has NULL value");
+							//we don't care about this attribute
 							continue;
 						}
-						if (attr.getValue().contains("${")) {
-							int indexStart = attr.getValue().indexOf("${") + 2;
-							int endStart = attr.getValue().indexOf("}", indexStart);
-							String expr = attr.getValue().substring(indexStart, endStart);
-							String o = String.valueOf(engine.eval(expr));
-							System.out.println("Expression attribute found in node: " + element.nodeName() + ", attr: " + attr.getKey() + ", expr: " + expr + ", value: " + o);
-							if (o != null) {
-								attr.setValue(o);
-								peerElement.attr(attr.getKey(), o);
-							} else {
-								peerElement.attr(attr.getKey(), expr + " --> resulted in null");
-								System.out.println(expr + " --> resulted in null");
-							}
+						System.out.println("------------------ATTR " + attr.getKey());
+						AttributeType attrType = AttributeType.getType(attr.getKey());
+						boolean willDeleteElement = false;
+						switch(attrType) {
+						case DATA_IF: {
+							//if the condifition is false, the element will be deleted
+							willDeleteElement = !handleDataIf(attr, element);
+						} break;
+						case DATA_FOR: {
+							handleDataFor(attr, element);
+							willDeleteElement = true;
+						} break;
+						case DATA_SET: {
+							handleDataSet(attr, element, localBindings);
+						}break;
+						default:{}
+						}
+						
+						//if the element will be deleted, we don't care about the rest of attributes
+						if(willDeleteElement) {
+							break;
+						}
+						
+						if(isExpressionRegex(attr.getValue())) {
+							System.out.println("Expression attribute found in node: " + element.nodeName() + ", attr: " + attr.getKey() + ", expr: " + attr.getValue());
+							attr.setValue(getExpressionValue(attr.getValue()));
 						}
 					} catch(Exception e) {
 						e.printStackTrace();
 					}
 				}
-				if(element.ownText().contains("${")) {
-					String text = element.ownText(); 
-					int index = text.indexOf("${") + 2;
-					String expr = text.substring(index, text.length() - 1);
-//					System.out.println("Expression text " + text + " found in node " + element.nodeName().toUpperCase() + " expr = " + expr);
-					try {
-						String o = text.substring(0, index-2) + String.valueOf(engine.eval(expr));
-						System.out.println("Expression evaluated at " + o);
-						
-						if (o != null) {
-							peerElement.text(o);
-							element.text(o);
-						}
-					} catch(Exception ee) {
-						System.out.println(" --> resulted in null");
-					}
+				if(isExpressionRegex(element.ownText())) {
+					element.text(getExpressionValue(element.ownText()));					
 				}
 			}
 			
@@ -188,27 +108,145 @@ public class PersonJSoupParser {
 			
 			return doc.html();
 			
-//			System.out.println("\nCONSTRUCTED DOCUMENT:\n" + doc.html());
-			
 		} catch (IOException e) {
 			e.printStackTrace();
 		} catch (ScriptException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
 		
 		return "";
 	}
 	
-	private void handleDataIf() {
-		
+	private static boolean handleDataIf(Attribute attr, Element element) {
+		boolean willRender = true;
+		try {
+			Object ifobj = engine.eval(attr.getValue());
+			if (ifobj != null && (ifobj instanceof Boolean)) {
+				boolean render = (boolean) ifobj;
+				if (!render) {
+					System.out.println("Don't render, remove element and continue");
+					elementsToRemove.add(element);
+					willRender = false;
+				} else {
+					attrsToRemove.put(element, attr);
+				}
+			}
+		} catch(ScriptException e) {
+			e.printStackTrace();
+		}
+		return willRender;
 	}
 	
-	private void handleDataFor() {
-		
+	private static void handleDataFor(Attribute attr, Element element) {		
+		try {
+			Object list = engine.eval(attr.getValue());
+			if (list instanceof List<?>) {
+				for (Object o : (List<?>)list) {
+					Element listEl = new Element(element.nodeName());
+					listEl.text(o.toString());
+					Attributes attrPersistent =element.attributes().clone();
+					attrPersistent.remove(attr.getKey());
+					listEl.attributes().addAll(attrPersistent);
+					element.before(listEl);
+				}
+			}
+			element.remove();
+		} catch(ScriptException e) {
+			e.printStackTrace();
+		}
 	}
 	
-	private boolean isExpression() {
-		return false;
+	private static void handleDataForWithCondition(Attribute listAttr, Attribute condAttr, Element element) {
+		try {
+			Object list = engine.eval(listAttr.getValue());
+			Object condition = engine.eval(condAttr.getValue());
+			boolean conditionTrue;
+			
+			if(condition == null || !(condition instanceof Boolean)) {
+				conditionTrue = false;
+			} else {
+				conditionTrue = (boolean) condition;
+			}
+			
+			if (list instanceof List<?>) {
+				for (Object dataForObject : (List<?>)list) {
+					if(!conditionTrue) {
+						continue;
+					}
+					Element listEl = new Element(element.nodeName());
+					listEl.text(dataForObject.toString());
+					Attributes attrPersistent = element.attributes().clone();
+					attrPersistent.remove(listAttr.getKey());
+					listEl.attributes().addAll(attrPersistent);
+					element.before(listEl);
+				}
+			}
+		} catch(ScriptException e) {
+			e.printStackTrace();
+		}
+	}
+	
+	private static void handleDataSet(Attribute attr, Element element, Bindings localBindings) {
+		try {
+			String localVarName = attr.getKey().substring(9);
+			Object globalObj = engine.get(localVarName);
+			
+			if(globalObj == null) {
+				System.out.println("No variable with the same name found");
+			} else {
+				System.out.println("GlobalStatePerson = " + globalObj.toString());
+				globalBindings.put(localVarName, globalObj);	
+			}
+			Person localStatePerson = (Person) engine.eval(attr.getValue(), localBindings);
+			if(localStatePerson == null) {
+				System.out.println("Local variable couldn't be created");
+			} else {
+				localBindings.put(localVarName, localStatePerson);
+				engine.setBindings(localBindings, ScriptContext.ENGINE_SCOPE);
+			}
+			attrsToRemove.put(element, attr);
+		} catch(ScriptException e) {
+			e.printStackTrace();
+		}
+	}
+	
+	private static void handleSpecialAttributes(List<Attribute> attrs, Element element) {
+		for(Attribute attr : attrs) {
+			if(isDataIf(attr)) {
+				
+			}
+		}
+	}
+	
+	//[\w*${\w}]
+	//(\w+)?\${(\w+)}
+	private static boolean isExpressionRegex(String text) {
+		boolean matches = text.trim().matches("([\\w\\s\\W]*)?\\$\\{(\\w+\\.\\w+)\\}"); 
+		return matches;
+	}
+	
+	private static String getExpressionValue(String text) {
+		String result = "";
+		try {
+			int indexStart = text.indexOf("${") + 2;
+			int endStart = text.indexOf("}", indexStart);			
+			String expr = text.substring(indexStart, endStart);
+			Object expressionObj = engine.eval(expr);
+			
+			if(expressionObj != null) {
+				result = text.substring(0, indexStart-2) + String.valueOf(engine.eval(expr)) + text.substring(endStart+1); 
+			}
+		} catch(IndexOutOfBoundsException | ScriptException e) {
+			e.printStackTrace();
+		}
+		
+		return result;
+	}
+	
+	private static boolean isDataIf(Attribute attr) {
+		if(attr == null || attr.getValue().isEmpty()) {
+			return false;
+		}
+		return (attr.getKey().equalsIgnoreCase(DATA_IF));
 	}
 }

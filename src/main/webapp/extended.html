@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<script type="server/javascript">
+importClass(Packages.biz.netcentric.Person)
+var id=request.getParameter("id")
+var person=Person.lookup(id)
+print(person.name);
+</script>
+<head>
+<title>${person.name}</title>
+</head>
+<body>
+	<h1 title="${person.name}">${person.name}</h1>
+	<h2 data-if="person.married" title="${person.spouse}">Spouse: ${person.spouse}</h2>
+	<div data-for-child="person.children" color="red" >Child: ${child}</div>
+	
+	<h2> Optional functionality </h2>
+	<h4 data-set-person="person.spouseObj"> Local Variable: ${person.name}</h4>	
+	<div title="${person.name}">Outer variable: ${person.name}</div>
+	
+	<h3>Combined data-ifs</h3>
+	<div data-if="person.married" data-if="person.hasChildren"> Married with children </div>	
+	
+	<h3>Combined data-if + data-for</h3>
+	<div data-if="person.married" data-for-child="person.children"> Child with ${person.spouse}: ${child}</div>
+	
+	<h3>Combined data-if + data-for</h3>
+	<div data-if="!person.married" data-for-child="person.children"> Out of wedlock child: ${child}</div>
+	
+	<h3>Combined data-for + data-if</h3>
+	<div data-for-friend="person.bestFriends" data-if="friend.married">Couples friend ${friend.name} and ${friend.spouse} </div>
+	<div data-for-friend="person.bestFriends" data-if="!friend.married">Single friend ${friend.name} </div>
+	
+</body>
+</html>
